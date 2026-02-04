@@ -1,0 +1,9 @@
+services:
+  piratebay:
+    name: Pirate Bay
+    checker:
+      basedir: ./checkers/PirateBay
+      script: ./piratebay.checker.py
+      setup: pip install --break-system-packages requests
+    vuln:
+      basedir: ./services/PirateBay
