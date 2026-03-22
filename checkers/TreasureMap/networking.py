@@ -24,7 +24,7 @@ class WSHelper:
 		self.wanted = set()
 		self.closed = False
 	def start(self):
-		asyncio.async(self.start_internal())
+		asyncio.ensure_future(self.start_internal())
 	async def start_internal(self):
 		try:
 			async with self.connection as ws:
@@ -68,7 +68,8 @@ class State:
 		self.hostname = hostname
 		self.name = name
 		self.port = '' if port is None else ':' + str(port)
-		cookie_jar = aiohttp.CookieJar(unsafe=True)
+		# Mono HttpListener rejects quoted cookie values with trailing '='.
+		cookie_jar = aiohttp.CookieJar(unsafe=True, quote_cookie=False)
 		self.session = aiohttp.ClientSession(
 			cookie_jar=cookie_jar,
 			headers={

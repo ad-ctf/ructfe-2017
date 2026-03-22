@@ -15,3 +15,11 @@ services:
       setup: pip install --break-system-packages requests
     vuln:
       basedir: ./services/PirateBay
+  treasuremap:
+    name: Treasure Map
+    checker:
+      basedir: ./checkers/TreasureMap
+      script: ./TreasureMap.checker.py
+      setup: pip install --break-system-packages aiohttp
+    vuln:
+      basedir: ./services/TreasureMap
