@@ -2,6 +2,7 @@
 import os
 import re
 import traceback
+import hashlib
 from sys import argv, stderr
 import requests
 import sys
@@ -32,9 +33,9 @@ def gen_syllable():
 
 
 def word_part(type):
-    if type is 'c':
+    if type == 'c':
         return random.sample([ch for ch in list(string.ascii_lowercase) if ch not in vowels], 1)[0]
-    if type is 'v':
+    if type == 'v':
         return random.sample(vowels, 1)[0]
 
 def select_name():
@@ -42,6 +43,7 @@ def select_name():
 
 
 flag_alpha = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+team_flag_re = re.compile(r"^TEAM\d{3}_[A-Z0-9]{32}$")
 
 spirits = [
 "Ale",
@@ -82,6 +84,19 @@ spirits = [
 def parse_flag(flag):
     return [flag_alpha.index(c) for c in flag[:-1]]
 
+
+def normalize_flag(flag):
+    if not team_flag_re.fullmatch(flag):
+        return flag
+
+    digest = hashlib.sha256(flag.encode()).digest()
+    n = int.from_bytes(digest, byteorder="big")
+    chars = []
+    for _ in range(31):
+        n, rem = divmod(n, len(flag_alpha))
+        chars.append(flag_alpha[rem])
+    return ''.join(reversed(chars)) + '='
+
 def unparse_flag(l):
     l = ([0] * (31 - len(l))) + l
     return ''.join([flag_alpha[c] for c in l]) + '='
@@ -120,7 +135,7 @@ def convert_base(x, base_from, base_to):
     return l
 
 def flag_to_recipe(flag):
-    return unparse_recipe(convert_base(parse_flag(flag), len(flag_alpha), len(spirits)))
+    return unparse_recipe(convert_base(parse_flag(normalize_flag(flag)), len(flag_alpha), len(spirits)))
 
 def merge_bytes(s):
     m = 0
@@ -129,6 +144,7 @@ def merge_bytes(s):
     return m
 
 def hash_flag(flag):
+    flag = normalize_flag(flag)
     flag_copy = [0] * 32
 
     for i in range(32):

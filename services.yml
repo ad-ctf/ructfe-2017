@@ -1,4 +1,12 @@
 services:
+  baz:
+    name: Baz
+    checker:
+      basedir: ./checkers/baz
+      script: ./baz.checker.py
+      setup: pip install --break-system-packages requests
+    vuln:
+      basedir: ./services/baz
   piratebay:
     name: Pirate Bay
     checker:
