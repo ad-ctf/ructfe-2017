@@ -2,7 +2,6 @@
 import os
 import re
 import traceback
-import hashlib
 from sys import argv, stderr
 import requests
 import sys
@@ -44,6 +43,7 @@ def select_name():
 
 flag_alpha = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 team_flag_re = re.compile(r"^TEAM\d{3}_[A-Z0-9]{32}$")
+magic = 0xb0b8badbeefdefec87edfece5f100deda11dead
 
 spirits = [
 "Ale",
@@ -85,18 +85,6 @@ def parse_flag(flag):
     return [flag_alpha.index(c) for c in flag[:-1]]
 
 
-def normalize_flag(flag):
-    if not team_flag_re.fullmatch(flag):
-        return flag
-
-    digest = hashlib.sha256(flag.encode()).digest()
-    n = int.from_bytes(digest, byteorder="big")
-    chars = []
-    for _ in range(31):
-        n, rem = divmod(n, len(flag_alpha))
-        chars.append(flag_alpha[rem])
-    return ''.join(reversed(chars)) + '='
-
 def unparse_flag(l):
     l = ([0] * (31 - len(l))) + l
     return ''.join([flag_alpha[c] for c in l]) + '='
@@ -107,6 +95,24 @@ def parse_recipe(recipe):
 
 def unparse_recipe(l):
     return [spirits[c] for c in l]
+
+def digits_to_number(digits, base):
+    n = 0
+    for digit in digits:
+        n *= base
+        n += digit
+    return n
+
+def number_to_base(n, base):
+    if n == 0:
+        return [0]
+
+    l = []
+    while n > 0:
+        n, value = divmod(n, base)
+        l.append(value)
+    l.reverse()
+    return l
 
 def pack_cmd(op, a, b):
     return '%s;%x;%x;%x;%x;' % (op, (a >> 128) & 0xffffffffffffffff, (a >> 64) & 0xffffffffffffffff, (a) & 0xffffffffffffffff, b)
@@ -135,7 +141,17 @@ def convert_base(x, base_from, base_to):
     return l
 
 def flag_to_recipe(flag):
-    return unparse_recipe(convert_base(parse_flag(normalize_flag(flag)), len(flag_alpha), len(spirits)))
+    if team_flag_re.fullmatch(flag):
+        team = int(flag[4:7])
+        suffix = [flag_alpha.index(c) for c in flag[8:]]
+        n = team
+        for digit in suffix:
+            n *= len(flag_alpha)
+            n += digit
+        n ^= magic
+        return unparse_recipe(number_to_base(n, len(spirits)))
+
+    return unparse_recipe(convert_base(parse_flag(flag), len(flag_alpha), len(spirits)))
 
 def merge_bytes(s):
     m = 0
@@ -144,20 +160,25 @@ def merge_bytes(s):
     return m
 
 def hash_flag(flag):
-    flag = normalize_flag(flag)
-    flag_copy = [0] * 32
-
-    for i in range(32):
-        idx = i if i % 2 == 0 else 32 - i
-        flag_copy[idx] = ord(flag[i]) - ord('A') + 10 if flag[i] > '9' else ord(flag[i]) - ord('0')
-    
     seed = 0x60d15dead
     m = 0xc6a4a7935bd1e995
     r = 47
 
-    h = (seed ^ (32 * m)) & 0xffffffffffffffff
-
-    data = [ merge_bytes(flag_copy[0:8]), merge_bytes(flag_copy[8:16]), merge_bytes(flag_copy[16:24]), merge_bytes(flag_copy[24:32]), ]
+    if team_flag_re.fullmatch(flag):
+        data = [merge_bytes(flag[i:i + 8].encode()) for i in range(0, len(flag), 8)]
+        h = (seed ^ (len(flag) * m)) & 0xffffffffffffffff
+    else:
+        flag_copy = [0] * 32
+        for i in range(32):
+            idx = i if i % 2 == 0 else 32 - i
+            flag_copy[idx] = ord(flag[i]) - ord('A') + 10 if flag[i] > '9' else ord(flag[i]) - ord('0')
+        data = [
+            merge_bytes(flag_copy[0:8]),
+            merge_bytes(flag_copy[8:16]),
+            merge_bytes(flag_copy[16:24]),
+            merge_bytes(flag_copy[24:32]),
+        ]
+        h = (seed ^ (32 * m)) & 0xffffffffffffffff
 
     for k in data:
         k = (k * m) & 0xffffffffffffffff

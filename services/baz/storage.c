@@ -3,11 +3,15 @@
 
 #define MAXITEMS 4096
 #define MAXNODES 409600
+#define KEY_SIZE 32
+#define LEGACY_FLAG_SIZE 32
+#define TEAM_FLAG_SIZE 40
+#define VALUE_SIZE (TEAM_FLAG_SIZE + 1)
 
 typedef struct 
 {
-	char key[32];
-	char value[32];
+	char key[KEY_SIZE];
+	char value[VALUE_SIZE];
 } slot;
 
 typedef struct
@@ -26,6 +30,12 @@ int32 logfd;
 
 
 bool store_item_impl(slot *item);
+bool is_legacy_flag(const char *flag);
+bool is_team_flag(const char *flag);
+char *decode_team_flag(uint192 n, char *buffer);
+char *encode_legacy_flag(const char *recipe, char *buffer);
+char *hash_legacy_flag(const char *flag, char *buffer);
+char *hash_team_flag(const char *flag, char *buffer);
 
 void init_storage()
 {
@@ -35,7 +45,7 @@ void init_storage()
 	memzero(slots, sizeof(slots));
 	nodes[0].used = true;
 
-	if ((logfd = openrw("storage")) < 0)
+	if ((logfd = openrw("storage-v2")) < 0)
 	{
 		print("fuck storage\n");
 		exit(1);
@@ -50,7 +60,7 @@ void init_storage()
 		if (!bytesRead)
 			break;
 
-		if (bytesRead < sizeof(item) || item.value[31] != '=')
+		if (bytesRead < sizeof(item) || (!is_legacy_flag(item.value) && !is_team_flag(item.value)))
 		{
 			print("Item ");nprint(items_read);print(" is corrupt\n");
 			break;
@@ -129,12 +139,13 @@ uint32 add_item(const slot *item)
 	return current_item;
 }
 
-void copy_value(const void *src, void *dest)
+void copy_bytes(const void *src, void *dest, uint64 length)
 {
-	((uint64 *)dest)[0] = ((uint64 *)src)[0];
-	((uint64 *)dest)[1] = ((uint64 *)src)[1];
-	((uint64 *)dest)[2] = ((uint64 *)src)[2];
-	((uint64 *)dest)[3] = ((uint64 *)src)[3];
+	const byte *s = (const byte *)src;
+	byte *d = (byte *)dest;
+	uint64 i;
+	for (i = 0; i < length; i++)
+		d[i] = s[i];
 }
 
 bool store_item_impl(slot *item)
@@ -174,7 +185,14 @@ char * store_item(char *key, char *value)
 	if (!key || !value)
 		return 0;
 	slot item;
-	copy_value(value, item.value);
+	memzero(&item, sizeof(item));
+	uint64 i;
+	for (i = 0; i < VALUE_SIZE; i++)
+	{
+		item.value[i] = value[i];
+		if (!value[i])
+			break;
+	}
 	if (!name_flag(key, item.key))
 		return 0;
 
@@ -208,8 +226,8 @@ char * load_item(const char *key, char *buffer)
 	if (!nodes[current].value)
 		return 0;
 
-	copy_value(slots[nodes[current].value - 1].value, buffer);
-	buffer[32] = 0; 
+	copy_bytes(slots[nodes[current].value - 1].value, buffer, VALUE_SIZE);
+	buffer[VALUE_SIZE] = 0; 
 
 	return buffer;
 }
@@ -276,7 +294,90 @@ char *spirits[] = {
 
 uint192 magic = { .i0 = 0xb0b8bad, .i1 = 0xbeefdefec87edfec, .i2 = 0xe5f100deda11dead };
 
-char * encode_flag(const char *recipe, char *buffer)
+bool is_legacy_flag(const char *flag)
+{
+	if (!flag)
+		return false;
+
+	uint64 i;
+	for (i = 0; i < LEGACY_FLAG_SIZE - 1; i++)
+	{
+		char c = flag[i];
+		bool is_digit = c >= '0' && c <= '9';
+		bool is_upper = c >= 'A' && c <= 'Z';
+		if (!is_digit && !is_upper)
+			return false;
+	}
+
+	return flag[LEGACY_FLAG_SIZE - 1] == '=' && !flag[LEGACY_FLAG_SIZE];
+}
+
+bool is_team_flag(const char *flag)
+{
+	if (!flag)
+		return false;
+	if (flag[0] != 'T' || flag[1] != 'E' || flag[2] != 'A' || flag[3] != 'M')
+		return false;
+	if (flag[7] != '_')
+		return false;
+
+	uint64 i;
+	for (i = 4; i < 7; i++)
+	{
+		if (flag[i] < '0' || flag[i] > '9')
+			return false;
+	}
+	for (i = 8; i < TEAM_FLAG_SIZE; i++)
+	{
+		char c = flag[i];
+		bool is_digit = c >= '0' && c <= '9';
+		bool is_upper = c >= 'A' && c <= 'Z';
+		if (!is_digit && !is_upper)
+			return false;
+	}
+
+	return !flag[TEAM_FLAG_SIZE];
+}
+
+uint64 flag_char_to_digit(char c)
+{
+	return c > '9' ? c - 'A' + 10 : c - '0';
+}
+
+char digit_to_flag_char(uint32 digit)
+{
+	return digit > 9 ? 'A' + digit - 10 : '0' + digit;
+}
+
+char *decode_team_flag(uint192 n, char *buffer)
+{
+	if (!buffer)
+		return 0;
+
+	uint32 rem;
+	int64 i;
+	for (i = TEAM_FLAG_SIZE - 1; i >= 8; i--)
+	{
+		n = divmod(n, 36, &rem);
+		buffer[i] = digit_to_flag_char(rem);
+	}
+
+	if (n.i2 >= 1000 || n.i1 || n.i0)
+		return 0;
+
+	buffer[0] = 'T';
+	buffer[1] = 'E';
+	buffer[2] = 'A';
+	buffer[3] = 'M';
+	buffer[4] = '0' + (n.i2 / 100);
+	buffer[5] = '0' + ((n.i2 / 10) % 10);
+	buffer[6] = '0' + (n.i2 % 10);
+	buffer[7] = '_';
+	buffer[TEAM_FLAG_SIZE] = 0;
+	return buffer;
+}
+
+char *encode_legacy_flag(const char *recipe, char *buffer)
 {
 	if (!recipe || !buffer)
 		return 0;
@@ -355,16 +456,27 @@ char * hash_flag(const char *flag, char *buffer)
 	if (!flag || !buffer)
 		return 0;
 
-	char flag_copy[32];
+	if (is_team_flag(flag))
+		return hash_team_flag(flag, buffer);
+
+	if (!is_legacy_flag(flag))
+		return 0;
+
+	return hash_legacy_flag(flag, buffer);
+}
+
+char *hash_legacy_flag(const char *flag, char *buffer)
+{
+	char flag_copy[LEGACY_FLAG_SIZE];
 	uint64 i;
-	for (i = 0; i < 32; i++)
-		flag_copy[i % 2 ? 32 - i : i] = flag[i] > '9' ? flag[i] - 'A' + 10 : flag[i] - '0';
-	
+	for (i = 0; i < LEGACY_FLAG_SIZE; i++)
+		flag_copy[i % 2 ? LEGACY_FLAG_SIZE - i : i] = flag[i] > '9' ? flag[i] - 'A' + 10 : flag[i] - '0';
+
 	const uint64 seed = 0x60d15dead;
 	const uint64 m = 0xc6a4a7935bd1e995;
 	const int32 r = 47;
 
-	uint64 h = seed ^ (32 * m);
+	uint64 h = seed ^ (LEGACY_FLAG_SIZE * m);
 
 	const uint64 *data = (const uint64 *)flag_copy;
 	const uint64 *end = 4 + data;
@@ -373,12 +485,12 @@ char * hash_flag(const char *flag, char *buffer)
 	{
 		uint64 k = *data++;
 
-		k *= m; 
-		k ^= k >> r; 
-		k *= m; 
+		k *= m;
+		k ^= k >> r;
+		k *= m;
 
 		h ^= k;
-		h *= m; 
+		h *= m;
 	}
 
 	h *= m;
@@ -392,6 +504,101 @@ char * hash_flag(const char *flag, char *buffer)
 
 	to_string_hex(h, buffer, 32);
 	return buffer;
+}
+
+uint64 load_uint64_le(const char *data)
+{
+	uint64 v = 0;
+	uint64 i;
+	for (i = 0; i < 8; i++)
+		v |= ((uint64)(byte)data[i]) << (8 * i);
+	return v;
+}
+
+char *hash_team_flag(const char *flag, char *buffer)
+{
+	const uint64 seed = 0x60d15dead;
+	const uint64 m = 0xc6a4a7935bd1e995;
+	const int32 r = 47;
+
+	uint64 h = seed ^ (TEAM_FLAG_SIZE * m);
+	uint64 i;
+	for (i = 0; i < TEAM_FLAG_SIZE / 8; i++)
+	{
+		uint64 k = load_uint64_le(flag + i * 8);
+
+		k *= m;
+		k ^= k >> r;
+		k *= m;
+
+		h ^= k;
+		h *= m;
+	}
+
+	h *= m;
+
+	h ^= h >> r;
+	h *= m;
+	h ^= h >> r;
+
+	if (!(h >> 63))
+		h = ~h;
+
+	to_string_hex(h, buffer, 32);
+	return buffer;
+}
+
+char * encode_flag(const char *recipe, char *buffer)
+{
+	if (!recipe || !buffer)
+		return 0;
+	const char *original_recipe = recipe;
+
+	uint192 n = expand(0);
+
+	char buf[64];
+	buf[0] = 0;
+	char *bptr = buf;
+	while (*recipe && bptr < buf + sizeof(buf))
+	{
+		char c = *recipe;
+		if (c == ',' || !recipe[1])
+		{
+			if (!recipe[1])
+			{
+				*bptr = *recipe;
+				bptr++;
+			}
+			*bptr = 0;
+			uint64 i;
+			for (i = 0; i < CSPIRITS; i++)
+			{
+				if (!strcmp(buf, spirits[i]))
+					break;
+			}
+
+			if (i >= CSPIRITS)
+				return 0;
+
+			n = multiply(n, CSPIRITS);
+			n = add(n, i);
+
+			buf[0] = 0;
+			bptr = buf;
+		}
+		else
+		{
+			*bptr = *recipe;
+			bptr++;
+		}
+		recipe++;
+	}
+
+	n = xor(n, magic);
+	if (decode_team_flag(n, buffer))
+		return buffer;
+
+	return encode_legacy_flag(original_recipe, buffer);
 }
 
 char * name_flag(const char *flag, char *buffer)
